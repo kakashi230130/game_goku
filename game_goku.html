@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Dragon Ball Style Fighter - Phase 1</title>
+
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #loading-screen {
+            position: absolute;
+            inset: 0;
+            background: #000;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            z-index: 999;
+            transition: opacity 0.5s ease;
+        }
+    </style>
+</head>
+<body>
+
+<div id="loading-screen">Loading Assets...</div>
+
+<script type="importmap">
+{
+    "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* =====================================================
+   CONFIG
+===================================================== */
+const ASSETS = {
+    arena: 'https://raw.githubusercontent.com/kakashi230130/game_goku/main/old_fighting_stage.glb',
+    goku:  'https://raw.githubusercontent.com/kakashi230130/game_goku/main/goku_final.glb',
+    mabu:  'https://raw.githubusercontent.com/kakashi230130/game_goku/main/mabu_final.glb'
+};
+
+let scene, camera, renderer, clock, controls;
+const mixers = [];
+const fighters = {};
+let GROUND_Y = 0;
+const keys = {};
+const GOKU_SPEED = 5.0;
+const GOKU_TURN_SPEED = 10.0;
+
+const GOKU_STATE = {
+    IDLE: 'idle',
+    MOVING: 'moving',
+    ATTACKING: 'attacking'
+};
+
+let gokuState = GOKU_STATE.IDLE;
+let currentGokuAction = null;
+
+// Keyboard Listeners
+window.addEventListener('keydown', (e) => { keys[e.code] = true; handleAttackInput(e.code); });
+window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+
+/* =====================================================
+   INIT
+===================================================== */
+init();
+
+function init() {
+    scene = new THREE.Scene();
+
+    // 🌤️ Dragon Ball style sky
+    scene.background = new THREE.Color(0x87CEEB);
+    scene.fog = new THREE.Fog(0x87CEEB, 20, 60);
+
+    camera = new THREE.PerspectiveCamera(
+        50,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        100
+    );
+    camera.position.set(0, 8, 16);
+    camera.lookAt(0, 2, 0);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    clock = new THREE.Clock();
+
+    controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 2, 0);
+    controls.enablePan = false;
+    controls.enableDamping = true;
+    controls.minAzimuthAngle = -Math.PI / 6;
+    controls.maxAzimuthAngle =  Math.PI / 6;
+    controls.maxPolarAngle = Math.PI / 2 - 0.1;
+
+    setupLights();
+    loadAssets();
+
+    window.addEventListener('resize', onWindowResize);
+}
+
+/* =====================================================
+   LIGHTING
+===================================================== */
+function setupLights() {
+    scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+
+    const key = new THREE.DirectionalLight(0xffffff, 2.5);
+    key.position.set(5, 10, 10);
+    key.castShadow = true;
+    scene.add(key);
+
+    const fill = new THREE.DirectionalLight(0xaaccff, 1.2);
+    fill.position.set(-8, 5, 10);
+    scene.add(fill);
+
+    const rim = new THREE.SpotLight(0x88aaff, 2.5);
+    rim.position.set(0, 8, -10);
+    scene.add(rim);
+}
+
+/* =====================================================
+   LOAD ASSETS
+===================================================== */
+function loadAssets() {
+    const manager = new THREE.LoadingManager(() => {
+        const loading = document.getElementById('loading-screen');
+        loading.style.opacity = 0;
+        setTimeout(() => loading.remove(), 500);
+        animate();
+    });
+
+    const loader = new GLTFLoader(manager);
+
+    // Arena (IMPORTANT)
+    loadArena(loader, ASSETS.arena);
+
+    // Fighters
+    loadFighter(loader, ASSETS.goku, {
+        name: 'Goku',
+        position: new THREE.Vector3(-3, 0, 0),
+        lookDir: new THREE.Vector3(0, 0, 1),
+        targetHeight: 1.8
+    });
+
+    loadFighter(loader, ASSETS.mabu, {
+        name: 'Buu',
+        position: new THREE.Vector3(3, 0, 0),
+        lookDir: new THREE.Vector3(0, 0, -1),
+        targetHeight: 2.0
+    });
+}
+
+/* =====================================================
+   ARENA + GROUND DETECTION
+===================================================== */
+function loadArena(loader, url) {
+    loader.load(url, gltf => {
+        const arena = gltf.scene;
+        arena.position.set(0, 0, 0);
+        const ARENA_SCALE = 80; // 👈 PHÓNG TO ARENA (6–10 là đẹp)
+
+        arena.scale.set(
+            ARENA_SCALE,
+            ARENA_SCALE,
+            ARENA_SCALE
+        );
+
+        arena.traverse(m => {
+            if (m.isMesh) m.receiveShadow = true;
+        });
+
+        scene.add(arena);
+        arena.updateMatrixWorld(true);
+
+        let floorMesh = null;
+        let maxArea = 0;
+
+        arena.traverse(child => {
+            if (!child.isMesh) return;
+            const box = new THREE.Box3().setFromObject(child);
+            const size = new THREE.Vector3();
+            box.getSize(size);
+            const area = size.x * size.z;
+            if (area > maxArea) {
+                maxArea = area;
+                floorMesh = child;
+            }
+        });
+
+        if (floorMesh) {
+            const floorBox = new THREE.Box3().setFromObject(floorMesh);
+            GROUND_Y = floorBox.max.y;
+
+        }
+
+        Object.values(fighters).forEach(f => groundCharacter(f.mesh));
+    });
+}
+
+/* =====================================================
+   CHARACTER
+===================================================== */
+function loadFighter(loader, url, cfg) {
+    loader.load(url, gltf => {
+        const model = gltf.scene;
+        model.position.copy(cfg.position);
+        model.lookAt(cfg.position.clone().add(cfg.lookDir));
+        scene.add(model);
+
+        model.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromObject(model);
+        const height = box.max.y - box.min.y;
+        model.scale.setScalar(cfg.targetHeight / height);
+        groundCharacter(model);
+
+        const mixer = new THREE.AnimationMixer(model);
+        mixers.push(mixer);
+
+        // --- PHASE 2: Action Mapping ---
+        const actions = {};
+        gltf.animations.forEach(clip => {
+            const action = mixer.clipAction(clip);
+            // Default setup for attacks
+            if (clip.name.toLowerCase().includes('boxing') || 
+                clip.name.toLowerCase().includes('kick') || 
+                clip.name.toLowerCase().includes('combo')) {
+                action.loop = THREE.LoopOnce;
+                action.clampWhenFinished = true;
+            }
+            actions[clip.name] = action;
+        });
+
+        // Store reference
+        fighters[cfg.name] = { 
+            mesh: model, 
+            mixer, 
+            actions, 
+            config: cfg 
+        };
+
+        // Initial State
+        const idleName = Object.keys(actions).find(n => n.toLowerCase().includes('idle'));
+        if (idleName) {
+            actions[idleName].play();
+            if (cfg.name === 'Goku') currentGokuAction = actions[idleName];
+        }
+
+        // --- PHASE 2: Attack End Listener (Goku Only) ---
+        if (cfg.name === 'Goku') {
+            mixer.addEventListener('finished', () => {
+                if (gokuState === GOKU_STATE.ATTACKING) {
+                    setStateGoku(GOKU_STATE.IDLE);
+                }
+            });
+        }
+    });
+}
+
+function setStateGoku(newState) {
+    if (gokuState === newState) return;
+    
+    console.log(`Goku State: ${gokuState} -> ${newState}`);
+    const goku = fighters['Goku'];
+    if (!goku) return;
+
+    const prevAction = currentGokuAction;
+    let nextActionName = 'idle';
+
+    if (newState === GOKU_STATE.IDLE) {
+        nextActionName = Object.keys(goku.actions).find(n => n.toLowerCase().includes('idle'));
+    } else if (newState === GOKU_STATE.MOVING) {
+        // Stop current animation to satisfy "no run animation" requirement
+        if (prevAction) prevAction.fadeOut(0.2);
+        currentGokuAction = null;
+        gokuState = newState;
+        return;
+    }
+
+    const nextAction = goku.actions[nextActionName];
+    if (nextAction) {
+        nextAction.reset().fadeIn(0.2).play();
+        currentGokuAction = nextAction;
+    }
+    
+    gokuState = newState;
+}
+
+function handleAttackInput(code) {
+    if (gokuState === GOKU_STATE.ATTACKING || !fighters['Goku']) return;
+
+    const goku = fighters['Goku'];
+    let attackClip = null;
+
+    switch(code) {
+        case 'KeyJ': attackClip = 'goku_left_boxing'; break;
+        case 'KeyK': attackClip = 'goku_right_boxing'; break;
+        case 'KeyU': attackClip = 'goku_left_kick'; break;
+        case 'KeyI': attackClip = 'goku_right_kick'; break;
+        case 'KeyL': attackClip = 'goku_combo'; break;
+    }
+
+    if (attackClip && goku.actions[attackClip]) {
+        gokuState = GOKU_STATE.ATTACKING;
+        if (currentGokuAction) currentGokuAction.fadeOut(0.15);
+        
+        const action = goku.actions[attackClip];
+        action.reset().fadeIn(0.15).play();
+        currentGokuAction = action;
+    }
+}
+
+function groundCharacter(mesh) {
+    if (!mesh || GROUND_Y === null) return;
+
+    mesh.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(mesh);
+    const offset = GROUND_Y - box.min.y;
+    mesh.position.y += offset;
+
+}
+
+/* =====================================================
+   RENDER LOOP
+===================================================== */
+
+function updateGoku(delta) {
+    const goku = fighters['Goku'];
+    if (!goku || gokuState === GOKU_STATE.ATTACKING) return;
+
+    const moveVec = new THREE.Vector3(0, 0, 0);
+    if (keys['KeyW']) moveVec.z -= 1;
+    if (keys['KeyS']) moveVec.z += 1;
+    if (keys['KeyA']) moveVec.x -= 1;
+    if (keys['KeyD']) moveVec.x += 1;
+
+    if (moveVec.lengthSq() > 0) {
+        moveVec.normalize();
+        
+        // 1. Move Position
+        goku.mesh.position.addScaledVector(moveVec, GOKU_SPEED * delta);
+        
+        // 2. Rotate to Face Direction
+        const targetQuaternion = new THREE.Quaternion();
+        const lookMat = new THREE.Matrix4().lookAt(
+            moveVec, 
+            new THREE.Vector3(0,0,0), 
+            goku.mesh.up
+        );
+        targetQuaternion.setFromRotationMatrix(lookMat);
+        goku.mesh.quaternion.slerp(targetQuaternion, GOKU_TURN_SPEED * delta);
+        
+        setStateGoku(GOKU_STATE.MOVING);
+    } else {
+        setStateGoku(GOKU_STATE.IDLE);
+    }
+}
+
+// Update the animate loop:
+function animate() {
+    requestAnimationFrame(animate);
+    const delta = clock.getDelta();
+    
+    updateGoku(delta); // Process Phase 2 Movement
+    
+    mixers.forEach(m => m.update(delta));
+    controls.update();
+    renderer.render(scene, camera);
+}
+
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+</script>
+
+</body>
+</html>
