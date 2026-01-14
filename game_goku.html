@@ -222,14 +222,19 @@ function loadFighterFBX(loader, url, cfg) {
 
             // 👉 ÉP TOÀN BỘ sang MeshStandardMaterial
             const oldMat = child.material;
-            child.material = new THREE.MeshStandardMaterial({
-                map: oldMat.map || null,
-                color: oldMat.map ? new THREE.Color(0xffffff) : new THREE.Color(0xffccaa),
+            const mat = new THREE.MeshStandardMaterial({
+                color: oldMat.color || new THREE.Color(0xffffff),
                 roughness: 0.6,
-                metalness: 0.0,
-                emissive: oldMat.map ? 0x000000 : 0x222222,
-                skinning: true
+                metalness: 0.0
             });
+
+            if (oldMat.map && oldMat.map.image) {
+                mat.map = oldMat.map;
+                mat.map.colorSpace = THREE.SRGBColorSpace;
+            }
+
+            mat.skinning = true;
+            child.material = mat;
 
             child.geometry.computeVertexNormals();
         });
