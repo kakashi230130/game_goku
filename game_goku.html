@@ -42,6 +42,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 /* =====================================================
@@ -49,8 +50,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 ===================================================== */
 const ASSETS = {
     arena: 'https://raw.githubusercontent.com/kakashi230130/game_goku/main/old_fighting_stage.glb',
-    goku:  'https://raw.githubusercontent.com/kakashi230130/game_goku/main/goku_final.glb',
-    mabu:  'https://raw.githubusercontent.com/kakashi230130/game_goku/main/mabu_final.glb'
+    goku:  'https://raw.githubusercontent.com/kakashi230130/game_goku/main/goku.fbx',
+    mabu:  'https://raw.githubusercontent.com/kakashi230130/game_goku/main/mabu.fbx'
 };
 
 let scene, camera, renderer, clock, controls;
@@ -156,26 +157,131 @@ function loadAssets() {
         animate();
     });
 
-    const loader = new GLTFLoader(manager);
+    const gltfLoader = new GLTFLoader(manager);
+    const fbxLoader  = new FBXLoader(manager);
 
-    // Arena (IMPORTANT)
-    loadArena(loader, ASSETS.arena);
+    // Arena vẫn dùng GLB
+    loadArena(gltfLoader, ASSETS.arena);
 
-    // Fighters
-    loadFighter(loader, ASSETS.goku, {
+    // Fighters dùng FBX
+    loadFighterFBX(fbxLoader, ASSETS.goku, {
         name: 'Goku',
         position: new THREE.Vector3(-3, 0, 0),
-        lookDir: new THREE.Vector3(0, 0, 1),
-        targetHeight: 1.8*2
+        targetHeight: 3.6
     });
 
-    loadFighter(loader, ASSETS.mabu, {
+    loadFighterFBX(fbxLoader, ASSETS.mabu, {
         name: 'Buu',
         position: new THREE.Vector3(3, 0, 0),
-        lookDir: new THREE.Vector3(0, 0, -1),
-        targetHeight: 2.0*2
+        targetHeight: 4.0
     });
 }
+
+function loadFighterFBX(loader, url, cfg) {
+    loader.load(url, object => {
+        const model = object;
+
+        /* =============================
+           TRANSFORM CƠ BẢN
+        ============================== */
+        model.position.copy(cfg.position);
+        model.rotation.set(0, Math.PI, 0);
+
+        // ❌ KHÔNG ép scale 0.01 nữa
+        model.scale.set(1, 1, 1);
+
+        scene.add(model);
+
+        /* =============================
+           SCALE THEO CHIỀU CAO THỰC
+        ============================== */
+        model.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromObject(model);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+
+        const scaleFactor = cfg.targetHeight / size.y;
+        model.scale.multiplyScalar(scaleFactor);
+
+        /* =============================
+           FIX MATERIAL (CỰC KỲ QUAN TRỌNG)
+        ============================== */
+        model.traverse(child => {
+            if (!child.isMesh) return;
+
+            child.castShadow = true;
+            child.receiveShadow = true;
+
+            // 👉 ÉP TOÀN BỘ sang MeshStandardMaterial
+            const oldMat = child.material;
+            child.material = new THREE.MeshStandardMaterial({
+                map: oldMat.map || null,
+                color: oldMat.color || new THREE.Color(0xffffff),
+                roughness: 0.65,
+                metalness: 0.0,
+                skinning: true
+            });
+
+            child.geometry.computeVertexNormals();
+        });
+
+        /* =============================
+           GROUND (CHỈ KHI CÓ ARENA)
+        ============================== */
+        if (GROUND_Y !== null) {
+            groundCharacter(model);
+        }
+
+        /* =============================
+           ANIMATION
+        ============================== */
+        const mixer = new THREE.AnimationMixer(model);
+        mixers.push(mixer);
+
+        const actions = {};
+        object.animations.forEach(clip => {
+            const action = mixer.clipAction(clip);
+            const name = clip.name.toLowerCase();
+
+            if (name.includes('idle') || name.includes('step')) {
+                action.loop = THREE.LoopRepeat;
+            } else {
+                action.loop = THREE.LoopOnce;
+                action.clampWhenFinished = true;
+            }
+
+            actions[clip.name] = action;
+        });
+
+        fighters[cfg.name] = {
+            mesh: model,
+            mixer,
+            actions,
+            config: cfg
+        };
+
+        /* =============================
+           PLAY IDLE
+        ============================== */
+        const idle = Object.keys(actions).find(n => n.toLowerCase().includes('idle'));
+        if (idle) {
+            actions[idle].play();
+            if (cfg.name === 'Goku') currentGokuAction = actions[idle];
+        }
+
+        /* =============================
+           ATTACK END
+        ============================== */
+        if (cfg.name === 'Goku') {
+            mixer.addEventListener('finished', () => {
+                if (gokuState === GOKU_STATE.ATTACKING) {
+                    setStateGoku(GOKU_STATE.IDLE);
+                }
+            });
+        }
+    });
+}
+
 
 /* =====================================================
    ARENA + GROUND DETECTION
@@ -227,101 +333,6 @@ function loadArena(loader, url) {
 /* =====================================================
    CHARACTER
 ===================================================== */
-function loadFighter(loader, url, cfg) {
-    loader.load(url, gltf => {
-        const model = gltf.scene;
-
-        // === Position ===
-        model.position.copy(cfg.position);
-
-        // ❌ KHÔNG dùng lookAt cho character có skeleton
-        // model.lookAt(...); ❌ REMOVE
-
-        // === FIX MIXAMO AXIS ===
-        model.rotation.set(0, Math.PI, 0); // quay mặt đúng hướng
-        model.rotation.x = 0;
-        model.rotation.z = 0;
-
-        scene.add(model);
-
-        // === Scale theo chiều cao ===
-        model.updateMatrixWorld(true);
-        const box = new THREE.Box3().setFromObject(model);
-        const height = box.max.y - box.min.y;
-        model.scale.setScalar(cfg.targetHeight / height);
-
-        // === Shadow + Texture ===
-        model.traverse(child => {
-            if (!child.isMesh) return;
-
-            child.castShadow = true;
-            child.receiveShadow = true;
-
-            const mat = child.material;
-            if (!mat) return;
-
-            // === TEXTURE COLOR SPACE ===
-            if (mat.map) {
-                mat.map.colorSpace = THREE.SRGBColorSpace;
-            }
-
-            // === FIX NHỰA / BÓNG GẮT ===
-            mat.metalness = 0.0;          // ❌ không dùng kim loại
-            mat.roughness = 0.65;         // ✅ bớt bóng – giống anime
-
-            // === FIX TÓC & DA BỊ LOANG SÁNG ===
-            mat.normalScale?.set(0.5, 0.5);
-
-            // === GIẢM SPECULAR CỨNG ===
-            mat.envMapIntensity = 0.3;
-
-            // === FIX FACE SHADING ===
-            child.geometry.computeVertexNormals();
-
-            mat.needsUpdate = true;
-        });
-
-        // === Ground character ===
-        groundCharacter(model);
-
-        // === Animation ===
-        const mixer = new THREE.AnimationMixer(model);
-        mixers.push(mixer);
-
-        const actions = {};
-        gltf.animations.forEach(clip => {
-            const action = mixer.clipAction(clip);
-            const name = clip.name.toLowerCase();
-
-            if (name.includes('step') || name.includes('idle')) {
-                action.loop = THREE.LoopRepeat;
-            } else {
-                action.loop = THREE.LoopOnce;
-                action.clampWhenFinished = true;
-            }
-            actions[clip.name] = action;
-        });
-
-        fighters[cfg.name] = { mesh: model, mixer, actions, config: cfg };
-
-        // === Idle mặc định ===
-        const idleName = Object.keys(actions).find(n => n.toLowerCase().includes('idle'));
-        if (idleName) {
-            actions[idleName].play();
-            if (cfg.name === 'Goku') currentGokuAction = actions[idleName];
-        }
-
-        // === Attack finish → back to idle (Goku only) ===
-        if (cfg.name === 'Goku') {
-            mixer.addEventListener('finished', () => {
-                if (gokuState === GOKU_STATE.ATTACKING) {
-                    setStateGoku(GOKU_STATE.IDLE);
-                }
-            });
-        }
-    });
-}
-
 
 function setStateGoku(newState, animName = 'idle') {
     if (gokuState === newState && currentGokuAction?._clip.name === animName) return;
